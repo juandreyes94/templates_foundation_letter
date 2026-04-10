@@ -6,6 +6,7 @@ Deploy on Google Cloud Run - up to 2M free calls/month.
 
 import os
 import io
+import re
 import zipfile
 import shutil
 import tempfile
@@ -39,10 +40,18 @@ PLACEHOLDERS = [
 
 
 def replace_in_xml(xml_content: str, replacements: dict) -> str:
-    """Replace all {placeholder} values in the XML string."""
+    """Replace {placeholder} values, handling Word's XML run fragmentation."""
     for key, value in replacements.items():
+        replacement = str(value) if value is not None else ""
         placeholder = "{" + key + "}"
-        xml_content = xml_content.replace(placeholder, str(value) if value is not None else "")
+        # Try simple replace first (fastest path)
+        if placeholder in xml_content:
+            xml_content = xml_content.replace(placeholder, replacement)
+        else:
+            # Word sometimes splits placeholders across multiple XML runs.
+            # Build a regex that matches each character with optional XML tags between them.
+            pattern = "".join(re.escape(c) + r"(?:<[^>]+>)*" for c in placeholder)
+            xml_content = re.sub(pattern, replacement.replace("\\", "\\\\"), xml_content)
     return xml_content
 
 
@@ -104,11 +113,12 @@ def generate():
         "Lot": "34",
         "City": "Austin",
         "print_date": "July 22, 2025",
+        "print_date_2": "July 22, 2025",
         "IRC": "2021",
         "Soils_report_source": "Geotech Labs",
-        "Soils_report_number": "GT-2024-0099",h
+        "Soils_report_number": "GT-2024-0099",
         "Soils_report_date_formatted_july9-2024": "July 9, 2024",
-        "filename": "contract_john_smith.docx"   // optional custom filename
+        "filename": "contract_john_smith.docx"
     }
     """
     if not request.is_json:
