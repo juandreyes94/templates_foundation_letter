@@ -6,12 +6,11 @@ Deploy on Google Cloud Run - up to 2M free calls/month.
 
 import os
 import io
-import re
-import zipfile
 import shutil
 import tempfile
 from flask import Flask, request, jsonify, send_file
 from datetime import datetime
+from docx import Document
 
 app = Flask(__name__)
 
@@ -39,53 +38,56 @@ PLACEHOLDERS = [
 ]
 
 
-def replace_in_xml(xml_content: str, replacements: dict) -> str:
-    """Replace {placeholder} values, handling Word's XML run fragmentation."""
+def replace_in_paragraph(paragraph, replacements):
+    """
+    Replace placeholders in a paragraph handling Word's run fragmentation.
+    Rebuilds the full paragraph text, replaces placeholders, then puts
+    the result back in the first run (preserving its formatting).
+    """
+    full_text = "".join(run.text for run in paragraph.runs)
+    if not any(("{" + key + "}") in full_text for key in replacements):
+        return  # Nothing to replace in this paragraph
+
+    new_text = full_text
     for key, value in replacements.items():
-        replacement = str(value) if value is not None else ""
-        placeholder = "{" + key + "}"
-        # Try simple replace first (fastest path)
-        if placeholder in xml_content:
-            xml_content = xml_content.replace(placeholder, replacement)
-        else:
-            # Word sometimes splits placeholders across multiple XML runs.
-            # Build a regex that matches each character with optional XML tags between them.
-            pattern = "".join(re.escape(c) + r"(?:<[^>]+>)*" for c in placeholder)
-            xml_content = re.sub(pattern, replacement.replace("\\", "\\\\"), xml_content)
-    return xml_content
+        new_text = new_text.replace("{" + key + "}", str(value) if value is not None else "")
+
+    # Put the replaced text in the first run, clear the rest
+    if paragraph.runs:
+        paragraph.runs[0].text = new_text
+        for run in paragraph.runs[1:]:
+            run.text = ""
 
 
 def generate_document(data: dict) -> bytes:
     """
-    Takes a dict of field values, fills the template, and returns
-    the generated .docx file as bytes.
+    Takes a dict of field values, fills the template using python-docx,
+    and returns the generated .docx file as bytes.
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # Copy template to temp dir
-        tmp_docx = os.path.join(tmpdir, "output.docx")
-        shutil.copy2(TEMPLATE_PATH, tmp_docx)
+    doc = Document(TEMPLATE_PATH)
 
-        # .docx is a ZIP — open it, patch the XML files, repack
-        output_buffer = io.BytesIO()
+    # Replace in all top-level paragraphs
+    for paragraph in doc.paragraphs:
+        replace_in_paragraph(paragraph, data)
 
-        with zipfile.ZipFile(tmp_docx, "r") as zin:
-            with zipfile.ZipFile(output_buffer, "w", zipfile.ZIP_DEFLATED) as zout:
-                for item in zin.infolist():
-                    content = zin.read(item.filename)
+    # Replace in tables
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    replace_in_paragraph(paragraph, data)
 
-                    # Only process XML files (text-based)
-                    if item.filename.endswith(".xml") or item.filename.endswith(".rels"):
-                        try:
-                            text = content.decode("utf-8")
-                            text = replace_in_xml(text, data)
-                            content = text.encode("utf-8")
-                        except UnicodeDecodeError:
-                            pass  # Binary file — keep as-is (images, etc.)
+    # Replace in headers and footers
+    for section in doc.sections:
+        for paragraph in section.header.paragraphs:
+            replace_in_paragraph(paragraph, data)
+        for paragraph in section.footer.paragraphs:
+            replace_in_paragraph(paragraph, data)
 
-                    zout.writestr(item, content)
-
-        output_buffer.seek(0)
-        return output_buffer.read()
+    output_buffer = io.BytesIO()
+    doc.save(output_buffer)
+    output_buffer.seek(0)
+    return output_buffer.read()
 
 
 @app.route("/health", methods=["GET"])
@@ -99,27 +101,6 @@ def generate():
     """
     Main endpoint. Accepts JSON body with field values.
     Returns the filled .docx file as a download.
-
-    Expected JSON body (all fields optional — missing = left blank):
-    {
-        "date_format_july22-2025": "July 22, 2025",
-        "client_name": "John Smith",
-        "Address_1": "123 Main St",
-        "Address_2": "Suite 100",
-        "Zip_code": "78701",
-        "subdivision": "Oak Creek Estates",
-        "Project_Address": "456 Oak Lane",
-        "Block": "12",
-        "Lot": "34",
-        "City": "Austin",
-        "print_date": "July 22, 2025",
-        "print_date_2": "July 22, 2025",
-        "IRC": "2021",
-        "Soils_report_source": "Geotech Labs",
-        "Soils_report_number": "GT-2024-0099",
-        "Soils_report_date_formatted_july9-2024": "July 9, 2024",
-        "filename": "contract_john_smith.docx"
-    }
     """
     if not request.is_json:
         return jsonify({"error": "Content-Type must be application/json"}), 400
