@@ -30,6 +30,7 @@ PLACEHOLDERS = [
     "Lot",
     "City",
     "print_date",
+    "print_date_2",
     "IRC",
     "Soils_report_source",
     "Soils_report_number",
@@ -105,7 +106,7 @@ def generate():
         "print_date": "July 22, 2025",
         "IRC": "2021",
         "Soils_report_source": "Geotech Labs",
-        "Soils_report_number": "GT-2024-0099",
+        "Soils_report_number": "GT-2024-0099",h
         "Soils_report_date_formatted_july9-2024": "July 9, 2024",
         "filename": "contract_john_smith.docx"   // optional custom filename
     }
